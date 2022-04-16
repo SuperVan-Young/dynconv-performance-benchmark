@@ -9,31 +9,19 @@ import torch.nn.functional as F
 from .base import BaseLayerScheduler
 
 
-@autotvm.template("dynconv/conv3x3_gathered")
-def schedule_conv3x3_gathered(C, L, G, group):
+@autotvm.template("dynconv/conv1x1_gathered")
+def schedule_conv1x1_gathered(Cout, Cin, L, G):
     # dataflow
-    input = te.placeholder((L, C, (G+2)*(G+2)), dtype="float32", name="input")
-    weight = te.placeholder((C, C//group, 3, 3),
-                            dtype="float32", name="weight")
+    input = te.placeholder((L, Cin, G*G), dtype="float32", name="input")
+    weight = te.placeholder((Cout, Cin, 1, 1), dtype="float32", name="weight")
 
-    rc = te.reduce_axis((0, C//group), name="rc")
-    ry = te.reduce_axis((0, 3), name="ry")
-    rx = te.reduce_axis((0, 3), name="rx")
-
-    def find_group(f): return f - (f % (C//group))
-
-    def find_input(v, ry, rx):
-        y, x = v // G, v % G
-        y_, x_ = y + ry, x + rx
-        v_ = y_ * (G+2) + x_
-        return v_
-
+    rc = te.reduce_axis((0, Cin), name="rc")
     output = te.compute(
-        (L, C, G*G),
+        (L, Cout, G*G),
         lambda n, f, x: te.sum(
-            input[n, find_group(f)+rc, find_input(x, ry, rx)
-                  ] * weight[f, rc, ry, rx],
-            axis=[rc, ry, rx]),
+            input[n, rc, x] * weight[f, rc, 0, 0],
+            axis=[rc, ]
+        ),
         name="output"
     )
 
@@ -41,14 +29,11 @@ def schedule_conv3x3_gathered(C, L, G, group):
 
     # schedule
     cfg = autotvm.get_config()
-
     n, f, x = s[output].op.axis
     cfg.define_split("tile_n", n, num_outputs=2)  # no ni! don't need vn
     cfg.define_split("tile_f", f, num_outputs=3)  # no fi!
     cfg.define_split("tile_x", x, num_outputs=3)
     cfg.define_split("tile_rc", rc, num_outputs=3)
-    cfg.define_split("tile_ry", ry, num_outputs=3)
-    cfg.define_split("tile_rx", rx, num_outputs=3)
 
     # caching
     OL = s.cache_write(output, "local")
@@ -75,15 +60,13 @@ def schedule_conv3x3_gathered(C, L, G, group):
 
     # tile reduction axes
     n, f, x = s[OL].op.axis
-    rc, ry, rx = s[OL].op.reduce_axis
+    [rc, ] = s[OL].op.reduce_axis
     rco, rcm, rci = cfg["tile_rc"].apply(s, OL, rc)
-    ryo, rym, ryi = cfg["tile_ry"].apply(s, OL, ry)
-    rxo, rxm, rxi = cfg["tile_rx"].apply(s, OL, rx)
-    s[OL].reorder(rco, ryo, rxo, rcm, rym, rxm, rci, ryi, rxi, n, f, x)
-    s[AA].compute_at(s[OL], rxo)
-    s[WW].compute_at(s[OL], rxo)
-    s[AL].compute_at(s[OL], rxm)
-    s[WL].compute_at(s[OL], rxm)
+    s[OL].reorder(rco, rcm, rci, n, f, x)
+    s[AA].compute_at(s[OL], rco)
+    s[WW].compute_at(s[OL], rco)
+    s[AL].compute_at(s[OL], rcm)
+    s[WL].compute_at(s[OL], rcm)
 
     # cooperative fetching
     n, f, x = s[AA].op.axis
@@ -106,46 +89,46 @@ def schedule_conv3x3_gathered(C, L, G, group):
 
     return s, [input, weight, output]
 
-
-class Conv3x3GatheredScheduler(BaseLayerScheduler):
-    def __init__(self, channel, group, sparselen, granularity, save_path):
+class Conv1x1GatheredScheduler(BaseLayerScheduler):
+    def __init__(self, channel, bottleneck, sparselen, granularity, save_path):
         super().__init__()
-        assert channel % group == 0
 
         self.channel = channel
-        self.group = group
+        self.bottleneck = bottleneck
         self.sparselen = sparselen
         self.granularity = granularity
         self.save_path = save_path
 
     def __repr__(self) -> str:
-        return "Conv3x3GatheredScheduler"
+        return "Conv1x1GatheredScheduler"
 
     @property
     def _task_name(self):
-        return "dynconv/conv3x3_gathered"
+        return "dynconv/conv1x1_gathered"
 
     @property
     def _task_args(self):
-        return [self.channel, self.sparselen, self.granularity, self.group]
+        return [self.channel*self.bottleneck, self.channel, self.sparselen, self.granularity]
 
     @property
     def _schedule(self):
-        return schedule_conv3x3_gathered(*self._task_args)
+        return schedule_conv1x1_gathered(*self._task_args)
 
     def _generate_sample(self):
         L, C, G = self.sparselen, self.channel, self.granularity
-        input = np.random.randn(L, C, (G+2)*(G+2)).astype("float32")
-        weight = np.random.randn(C, C//self.group, 3, 3).astype("float32")
+        Cout, Cin = C * self.bottleneck, C
+        input = np.random.randn(L, Cin, G*G).astype("float32")
+        weight = np.random.randn(Cout, Cin, 1, 1).astype("float32")
         return [input, weight]
-
+    
     def _convert_sample(self, sample):
         L, C, G = self.sparselen, self.channel, self.granularity
+        Cout, Cin = C * self.bottleneck, C
         sample = [tvm.nd.array(_, self.device) for _ in sample]
-        output = tvm.nd.empty((L, C, G*G), dtype="float32", device=self.device)
+        output = tvm.nd.empty((L, Cout, G*G), dtype="float32", device=self.device)
         sample.append(output)
         return sample
-
+    
     def _run_tvm(self, inputs):
         inputs = self._convert_sample(inputs)
         self.func(*inputs)
@@ -153,13 +136,13 @@ class Conv3x3GatheredScheduler(BaseLayerScheduler):
 
     def _run_numpy(self, inputs):
         raise NotImplementedError
-
+    
     def _run_pytorch(self, inputs):
         L, C, G = self.sparselen, self.channel, self.granularity
+        Cout, Cin = C * self.bottleneck, C
         input, weight = inputs
-        input = torch.tensor(input.reshape(L, C, G+2, G+2),
-                             dtype=torch.float32, device="cuda")
+        input = torch.tensor(input.reshape(L, Cin, G, G), dtype=torch.float32, device="cuda")
         weight = torch.tensor(weight, dtype=torch.float32, device="cuda")
-        output = F.conv2d(input, weight, None, groups=self.group)
-        output = output.cpu().numpy().reshape(L, C, -1)
+        output = F.conv2d(input, weight)
+        output = output.cpu().numpy().reshape(L, Cout, -1)
         return output
