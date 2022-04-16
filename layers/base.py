@@ -13,7 +13,8 @@ class BaseLayerScheduler():
         self.target = "cuda"  # default target is cuda
         self.device = tvm.device("cuda", 0)  # default device is GPU:0
         self.n_trial = 100  # number of trials in autotuning
-        self.rtol = 1e-5  # acceptable accuracy degradation in checking
+        self.rtol = 1e-5  # acceptable relative accuracy degradation
+        self.atol = 1e-7  # acceptable absolute accuracy degradation
         self.eval_repeat = 100  # number to repeat in evaluation
         self.save_path = None  # where to save the autotuning result
         self.func = None  # currently best runtime function
@@ -154,7 +155,7 @@ class BaseLayerScheduler():
         sample = self._generate_sample()
         valid = self.run(sample, runtype)
         result = self.run(sample, "tvm")
-        tvm.testing.assert_allclose(valid, result, rtol=self.rtol)
+        tvm.testing.assert_allclose(valid, result, rtol=self.rtol, atol=self.atol)
 
     def evaluate(self):
         """Evaluate runtime function's performance
