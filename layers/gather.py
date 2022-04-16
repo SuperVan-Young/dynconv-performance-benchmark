@@ -77,8 +77,6 @@ class GatherScheduler(BaseLayerScheduler):
         self.granularity = granularity
         self.save_path = save_path
 
-        self.task_name = "dynconv/gather"
-
     def __repr__(self) -> str:
         return "GatherScheduler"
 
