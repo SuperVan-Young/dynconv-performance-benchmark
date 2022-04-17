@@ -78,6 +78,17 @@ class BaseBlockEvaluator():
         else:
             return reduce(lambda x, y: x+y, result.values())
 
+    def __call__(self):
+        """Feed in parameters, give time evaluation, simple.
+
+        Returns:
+            float: result of evaluation
+        """
+        self.setup()
+        self.autotune()
+        self.build()
+        return self.evaluate(verbose=False)
+
 
 class TVMBlockEvaluator(BaseBlockEvaluator):
     """Use tvm implementations to evaluate residual block
