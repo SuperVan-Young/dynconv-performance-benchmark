@@ -1,1 +1,1 @@
-from .base import BaseBlockScheduler
+from .base import TVMBlockEvaluator

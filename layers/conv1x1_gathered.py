@@ -98,6 +98,9 @@ class Conv1x1GatheredScheduler(BaseLayerScheduler):
         self.sparselen = sparselen
         self.granularity = granularity
         self.save_path = save_path
+        
+        self.rtol = 1e-4
+        self.atol = 1
 
     def __repr__(self) -> str:
         return "Conv1x1GatheredScheduler"

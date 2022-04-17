@@ -101,6 +101,9 @@ class ConvDenseScheduler(BaseLayerScheduler):
         self.kernel = kernel
         self.save_path = save_path
 
+        self.rtol = 1e-4
+        self.atol = 1
+
     def __repr__(self) -> str:
         return "ConvDenseScheduler"
 
