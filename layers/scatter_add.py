@@ -36,23 +36,22 @@ def schedule_scatter_add(C, H, W, L, G):
     # scheduling
     cfg = autotvm.get_config()
 
-    n, f, y, x = s[output].op.axis    
-    cfg.define_split("tile_n", n, num_outputs=2)  # no tn
+    n, f, y, x = s[output].op.axis
     cfg.define_split("tile_f", f, num_outputs=4)
-    cfg.define_split("tile_y", y, num_outputs=3)
-    cfg.define_split("tile_x", x, num_outputs=3)
+    cfg.define_split("tile_y", y, num_outputs=4)  # by relieve memory ref
+    cfg.define_split("tile_x", x, num_outputs=4)  # bx relieve memory ref
 
     # caching
     OL = s.cache_write(output, "local")
 
     # tile and bind spatial axes
-    bn, ni = cfg["tile_n"].apply(s, output, n)
     bf, vf, tf, fi = cfg["tile_f"].apply(s, output, f)
-    vy, ty, yi = cfg["tile_y"].apply(s, output, y)
-    vx, tx, xi = cfg["tile_x"].apply(s, output, x)
+    by, vy, ty, yi = cfg["tile_y"].apply(s, output, y)
+    bx, vx, tx, xi = cfg["tile_x"].apply(s, output, x)
 
-    s[output].bind(bn, te.thread_axis("blockIdx.y"))
-    s[output].bind(bf, te.thread_axis("blockIdx.x"))
+    s[output].bind(bf, te.thread_axis("blockIdx.z"))
+    s[output].bind(by, te.thread_axis("blockIdx.y"))
+    s[output].bind(bx, te.thread_axis("blockIdx.x"))
     s[output].bind(vf, te.thread_axis("vthread"))
     s[output].bind(vy, te.thread_axis("vthread"))
     s[output].bind(vx, te.thread_axis("vthread"))
@@ -60,7 +59,7 @@ def schedule_scatter_add(C, H, W, L, G):
     s[output].bind(ty, te.thread_axis("threadIdx.y"))
     s[output].bind(tx, te.thread_axis("threadIdx.x"))
 
-    s[output].reorder(bn, bf, vf, vy, vx, tf, ty, tx, ni, fi, yi, xi)
+    s[output].reorder(n, bf, vf, vy, vx, tf, ty, tx, fi, yi, xi)
     s[OL].compute_at(s[output], tx)
 
     return s, [input, gathered, mask, output]
