@@ -68,6 +68,6 @@ class SearchSpaceSampler():
             return None
 
         return {
-            "sparselen": int(sparsity * (block_setting["width"] // granularity) ** 2),
+            "sparselen": int(sparsity * ((block_setting["width"] // granularity) ** 2)),
             "granularity": granularity,
         }

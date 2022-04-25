@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from warnings import warn
 from functools import reduce
 from layers import *
 import os
@@ -122,6 +123,9 @@ class TVMBlockEvaluator(BaseBlockEvaluator):
         assert width % granularity == 0
         assert channel % bottleneck == 0
         assert sparselen * granularity * granularity < width * width
+
+        if mode == "sparse":
+            warn("TVMBlockEvaluator will deprecate sparse mode in future version, please use TVMDynamicBlockEvaluator instead")
 
         self.mode = mode
         self.channel = channel
