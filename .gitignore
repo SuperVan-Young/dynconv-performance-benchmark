@@ -1,4 +1,4 @@
 scratch
-log
+log*
 __pycache__
 blockResult.json
