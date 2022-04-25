@@ -34,6 +34,8 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
             self.channel, self.channel, self.width, 1, self.save_dir+"/conv1.json")
         self.layers["conv2"] = ConvDenseScheduler(
             self.channel, self.channel, self.width, 3, self.save_dir+"/conv2.json")
+        for layer in self.layers.values():
+            layer.n_trial = self.n_trial
 
     def run(self):
         raise NotImplementedError
@@ -44,6 +46,9 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
 
         sparse_layers = {}
         save_dir = self.save_dir + f"/l{sparselen}_m{granularity}"
+        
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
 
         sparse_layers["conv2"] = Conv3x3GatheredScheduler(
             self.channel, self.group, sparselen, granularity, save_dir+"/conv2.json"
@@ -111,10 +116,12 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
     def __call__(self, mode="dense", sparselen=None, granularity=None, test_gather=False, test_scatter=False, test_masker=False):
         if mode == "dense":
             super().__call__()
-        else:
+        elif mode == "sparse":
             assert sparselen != None
             assert granularity != None
             self.setup_sparse(sparselen, granularity, test_gather, test_scatter, test_masker)
             self.autotune("sparse")
             self.build("sparse")
-            return self.evaluate_sparse(verbose=False)
+            return self.evaluate(mode="sparse", verbose=False)
+        else:
+            raise NotImplementedError
