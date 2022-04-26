@@ -49,7 +49,7 @@ def regnet_parameters(num):
     else:
         raise NotImplementedError
 
-    return channels, group if not DEBUG else [64], 16
+    return channels, group if not DEBUG else ([64], 16)
 
 def get_factors(num):
     factors = []

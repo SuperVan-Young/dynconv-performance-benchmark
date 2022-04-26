@@ -94,7 +94,7 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
         bar = tqdm(layers.items())
         for name, layer in bar:
             bar.set_description(name)
-            layer.autotune()
+            layer.autotune(refresh=True)
         print(f"All layers in {self} are autotuned.")
 
     def build(self, mode="dense"):
