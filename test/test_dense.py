@@ -84,7 +84,7 @@ if __name__ == "__main__":
     s = ss[int(args.g)]
 
     channels, group = regnet_parameters("008")
-    for i, width in enumerate(widths):
+    for i, width in enumerate(reversed(widths)):
         channel = channels[i]
         n_trial = 300 if not DEBUG else 10  # no refreshing, so 4 processes are cooperating
         bs = TVMDynamicBlockEvaluator(channel, width, group, f"log_dense/c{channel}_w{width}_g{group}", n_trial=n_trial)
@@ -92,5 +92,6 @@ if __name__ == "__main__":
         factors = get_factors(width)
         for g in factors:
             sl = int(s * ((width // g) ** 2))
-            sl = (sl // 8) * 8  # better for scheduling
+            if sl == 0:
+                continue
             print(bs("sparse", sl, g, True, True, True))
