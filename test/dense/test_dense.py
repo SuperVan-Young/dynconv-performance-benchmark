@@ -31,6 +31,11 @@ if __name__ == "__main__":
 
     for i in range(4):
         width, channel = widths[i], channels[i]
-        n_trial = 10  # debug
+        n_trial = 300  # debug
         bs = TVMDynamicBlockEvaluator(channel, width, group, f"log/c{channel}_w{width}_g{group}", n_trial)
-        bs()
+        # bs()
+
+        # only evaluate add
+        bs.setup()
+        layer = bs.layers["add"]
+        layer.autotune(refresh="True")
