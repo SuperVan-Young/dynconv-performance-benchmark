@@ -7,12 +7,28 @@ from tqdm import tqdm
 class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
     """Offer more fine-grained control over the residual block in sparse mode.
 
+    For dense version, the evaluator analyzes all layers except BN and ReLU.
+
+    x -> conv1x1_dense (BN, ReLU) ->  conv3x3_dense (BN, ReLU) -> conv1x1_dense (BN) -> add -> (ReLU) -> out
+      \                                                                                 /
+       -------------------------------------------------------------------------------->
+
+    For sparse version, the evaluator analyzes performance of layers
+    which are not in parentheses in the following graph.
+
+    x -> conv3x3_dense (BN, ReLU) -> (pooling) -> conv1x1_dense (+bias)
+     \                                                  \ 
+      -> conv1x1_dense (BN, ReLU) -> gather -> conv3x3_gathered (BN, ReLU) -> conv1x1_gathered (BN) -> scatter_add -> (ReLU) -> out
+      \                                                                                                   /
+       -------------------------------------------------------------------------------------------------->
+    # TODO: add pooling
+
     Conventional interfaces only work on dense operations, such as masker and
     conv1. We use new interfaces for gathered operations.
 
     Different from regnet's definitions, width means size of feature map here. 
     Since conv3x3_gathered cannot handle stride != 1,
-    width stays consistent within the block
+    width stays consistent within the block.
 
     """
 
@@ -30,10 +46,14 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
         # Only set up dense part
         self.layers["maskconv1"] = ConvDenseScheduler(
             1, self.channel, self.width, 3, self.save_dir+"/maskconv1.json")
+        # conv3 is the same as conv1
         self.layers["conv1"] = ConvDenseScheduler(
             self.channel, self.channel, self.width, 1, self.save_dir+"/conv1.json")
         self.layers["conv2"] = ConvDenseScheduler(
             self.channel, self.channel, self.width, 3, self.save_dir+"/conv2.json")
+        self.layers["add"] = AddScheduler(
+            self.channel, self.width, self.save_dir+"/add.json")
+        # set up n_trial
         for layer in self.layers.values():
             layer.n_trial = self.n_trial
 

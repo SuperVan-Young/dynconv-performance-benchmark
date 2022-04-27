@@ -1,6 +1,5 @@
-DEBUG = 0  # non-zero will check if the scripts could run
-
 def regnet_parameters(num):
+    widths = [56, 28, 14, 7]
     channels = None
     group = None
 
@@ -19,16 +18,16 @@ def regnet_parameters(num):
     else:
         raise NotImplementedError
 
-    return channels, group if not DEBUG else ([64], 16)
+    return widths, channels, group
 
 def get_factors(num):
     factors = []
     if num == 7:
-        factors = [1, 7]
+        factors = [1]
     elif num == 14:
         factors = [1, 2, 7]
     elif num == 28:
         factors = [1, 2, 4, 7, 14]
     elif num == 56:
         factors = [1, 2, 4, 7, 8, 14, 28]
-    return factors if not DEBUG else [1]
+    return factors
