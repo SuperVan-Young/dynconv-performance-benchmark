@@ -44,8 +44,8 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
 
     def setup(self):
         # Only set up dense part
-        self.layers["maskconv1"] = ConvDenseScheduler(
-            1, self.channel, self.width, 3, self.save_dir+"/maskconv1.json")
+        # self.layers["maskconv1"] = ConvDenseScheduler(
+        #     1, self.channel, self.width, 3, self.save_dir+"/maskconv1.json")
         # conv3 is the same as conv1
         self.layers["conv1"] = ConvDenseScheduler(
             self.channel, self.channel, self.width, 1, self.save_dir+"/conv1.json")
@@ -60,7 +60,7 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
     def run(self):
         raise NotImplementedError
 
-    def setup_sparse(self, sparselen, granularity, test_gather=False, test_scatter=False, test_masker=False):
+    def setup_sparse(self, sparselen, granularity, test_gather=False, test_scatter=False, test_masker=False, test_pooling=False):
         assert sparselen * granularity * granularity < self.width ** 2
         assert self.width % granularity == 0
 
@@ -85,8 +85,15 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
                 self.width, self.channel, sparselen, granularity, save_dir+"/scatter_add.json"
             )
         if test_masker:
-            sparse_layers["maskconv2"] = ConvDenseScheduler(
-                1, 1, self.width//granularity, 1, save_dir+"/maskconv2.json")
+            # sparse_layers["maskconv2"] = ConvDenseScheduler(
+            #     1, 1, self.width//granularity, 1, save_dir+"/maskconv2.json")
+            sparse_layers["maskconv"] = ConvDenseScheduler(
+                2, self.channel, self.width//granularity, 1, save_dir+"/maskconv.json")
+        if test_pooling:
+            sparse_layers["pooling"] = PoolingScheduler(
+                self.channel, self.width, granularity, save_dir+"pooling.json"
+            )
+            
         
         for layer in sparse_layers.values():
             layer.n_trial = self.n_trial

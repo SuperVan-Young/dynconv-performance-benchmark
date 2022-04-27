@@ -5,3 +5,4 @@ from .scatter_add import ScatterAddScheduler
 from .conv1x1_gathered import Conv1x1GatheredScheduler
 from .conv_dense import ConvDenseScheduler
 from .add import AddScheduler
+from .pooling import PoolingScheduler

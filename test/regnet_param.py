@@ -31,3 +31,15 @@ def get_factors(num):
     elif num == 56:
         factors = [1, 2, 4, 7, 8, 14, 28]
     return factors
+
+def find_best_sparselen(width, slow, shigh):
+    """Find best sparselen given sparsity lower limit and higher limit
+    """
+    def factor(num):
+        ls = [i for i in range(1, num+1) if num % i == 0]
+        return len(ls)
+
+    sparselens = range(int(width*width*slow), int(width*width*shigh)+1)
+    factors = [factor(i) for i in sparselens]
+    sl = sparselens.index(max(factors))
+    return sl
