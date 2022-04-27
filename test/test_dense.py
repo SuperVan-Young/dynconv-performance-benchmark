@@ -73,18 +73,19 @@ if __name__ == "__main__":
     channels, group = regnet_parameters(num)
 
     # dense
-    for i, width in enumerate(widths):
-        channel = channels[i]
-        n_trial = 300 if not DEBUG else 10  # no refreshing, so 4 processes are cooperating
-        bs = TVMDynamicBlockEvaluator(channel, width, group, f"log_dense/c{channel}_w{width}_g{group}", n_trial=n_trial)
-        print(bs())
+    # for i, width in enumerate(widths):
+    #     channel = channels[i]
+    #     n_trial = 300 if not DEBUG else 10  # no refreshing, so 4 processes are cooperating
+    #     bs = TVMDynamicBlockEvaluator(channel, width, group, f"log_dense/c{channel}_w{width}_g{group}", n_trial=n_trial)
+    #     print(bs())
     
     # 008 sparse
     ss = [0.2, 0.4, 0.6, 0.8]
     s = ss[int(args.g)]
 
     channels, group = regnet_parameters("008")
-    for i, width in enumerate(reversed(widths)):
+    for i in reversed(range(4)):
+        width = widths[i]
         channel = channels[i]
         n_trial = 300 if not DEBUG else 10  # no refreshing, so 4 processes are cooperating
         bs = TVMDynamicBlockEvaluator(channel, width, group, f"log_dense/c{channel}_w{width}_g{group}", n_trial=n_trial)
