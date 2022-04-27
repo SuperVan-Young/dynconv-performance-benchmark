@@ -91,7 +91,7 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
                 2, self.channel, self.width//granularity, 1, save_dir+"/maskconv.json")
         if test_pooling:
             sparse_layers["pooling"] = PoolingScheduler(
-                self.channel, self.width, granularity, save_dir+"pooling.json"
+                self.channel, self.width, granularity, save_dir+"/pooling.json"
             )
             
         

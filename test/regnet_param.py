@@ -41,5 +41,5 @@ def find_best_sparselen(width, slow, shigh):
 
     sparselens = range(int(width*width*slow), int(width*width*shigh)+1)
     factors = [factor(i) for i in sparselens]
-    sl = sparselens.index(max(factors))
-    return sl
+    idx = factors.index(max(factors))
+    return max(sparselens[idx], 1) # minimum 1
