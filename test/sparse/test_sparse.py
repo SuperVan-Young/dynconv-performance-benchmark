@@ -46,4 +46,5 @@ if __name__ == "__main__":
             bs.setup_sparse(sl, g, False, False, False, False, True, False)
             bs.autotune("sparse")
 
-    print("test sparse complete!")
+    print("autotune complete!")
+
