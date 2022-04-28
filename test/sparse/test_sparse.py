@@ -25,7 +25,7 @@ if __name__ == "__main__":
     os.environ['CUDA_VISIBLE_DEVICES'] = args.g
     
     # test dense model's speed
-    widths, channels, group = regnet_parameters("008")
+    widths, channels, group_width = regnet_parameters("008")
 
     ss = [0.2, 0.4, 0.6, 0.8]
     s = ss[int(args.g)]
@@ -33,14 +33,17 @@ if __name__ == "__main__":
     for i in range(4):
         width, channel = widths[i], channels[i]
         n_trial = 300  # debug
-        save_path = f"log/c{channel}_w{width}_g{group}"
+        save_path = f"log/c{channel}_w{width}_g{group_width}"
         if not os.path.exists(save_path):
             os.mkdir(save_path)
-        bs = TVMDynamicBlockEvaluator(channel, width, group, save_path, n_trial)
+        bs = TVMDynamicBlockEvaluator(channel, width, group_width, save_path, n_trial)
 
         # sparse
         gg = get_factors(width)
         for g in gg:
             sl = find_best_sparselen(width//g, s-0.01, s+0.01)
-            bs.setup_sparse(sl, g, True, True, True, True)
+            # bs.setup_sparse(sl, g, True, True, True, True)
+            bs.setup_sparse(sl, g, False, False, False, False, True, False)
             bs.autotune("sparse")
+
+    print("test sparse complete!")

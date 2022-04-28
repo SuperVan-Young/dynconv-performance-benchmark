@@ -27,15 +27,21 @@ if __name__ == "__main__":
     
     # test dense model's speed
     num = args.n
-    widths, channels, group = regnet_parameters(num)
+    widths, channels, group_width = regnet_parameters(num)
 
     for i in range(4):
         width, channel = widths[i], channels[i]
         n_trial = 300  # debug
-        bs = TVMDynamicBlockEvaluator(channel, width, group, f"log/c{channel}_w{width}_g{group}", n_trial)
+        bs = TVMDynamicBlockEvaluator(channel, width, group_width, f"log/c{channel}_w{width}_g{group_width}", n_trial)
         # bs()
 
         # only evaluate add
+        # bs.setup()
+        # layer = bs.layers["add"]
+        # layer.autotune(refresh="True")
+        
+        # only evaluate conv2
         bs.setup()
-        layer = bs.layers["add"]
+        layer = bs.layers["conv2"]
         layer.autotune(refresh="True")
+    print("test dense complete!")

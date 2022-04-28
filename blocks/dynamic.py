@@ -21,7 +21,6 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
       -> conv1x1_dense (BN, ReLU) -> gather -> conv3x3_gathered (BN, ReLU) -> conv1x1_gathered (BN) -> scatter_add -> (ReLU) -> out
       \                                                                                                   /
        -------------------------------------------------------------------------------------------------->
-    # TODO: add pooling
 
     Conventional interfaces only work on dense operations, such as masker and
     conv1. We use new interfaces for gathered operations.
@@ -32,13 +31,15 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
 
     """
 
-    def __init__(self, channel, width, group, save_dir, n_trial=300):
+    def __init__(self, channel, width, group_width, save_dir, n_trial=300):
         super().__init__()
         self.sparse_layers = {}
+        assert channel % group_width == 0
 
         self.channel = channel
         self.width = width
-        self.group = group
+        self.group_width = group_width
+        self.group = self.channel // self.group_width
         self.save_dir = save_dir
         self.n_trial = n_trial   # only support int now
 
@@ -49,8 +50,8 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
         # conv3 is the same as conv1
         self.layers["conv1"] = ConvDenseScheduler(
             self.channel, self.channel, self.width, 1, self.save_dir+"/conv1.json")
-        self.layers["conv2"] = ConvDenseScheduler(
-            self.channel, self.channel, self.width, 3, self.save_dir+"/conv2.json")
+        self.layers["conv2"] = GroupConvDenseScheduler(
+            self.channel, self.channel, self.width, 3, self.group, self.save_dir+"/conv2.json")
         self.layers["add"] = AddScheduler(
             self.channel, self.width, self.save_dir+"/add.json")
         # set up n_trial
@@ -60,7 +61,7 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
     def run(self):
         raise NotImplementedError
 
-    def setup_sparse(self, sparselen, granularity, test_gather=False, test_scatter=False, test_masker=False, test_pooling=False):
+    def setup_sparse(self, sparselen, granularity, test_gather=False, test_scatter=False, test_masker=False, test_pooling=False, test_conv2=True, test_conv3=True):
         assert sparselen * granularity * granularity < self.width ** 2
         assert self.width % granularity == 0
 
@@ -69,13 +70,14 @@ class TVMDynamicBlockEvaluator(BaseBlockEvaluator):
         
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
-
-        sparse_layers["conv2"] = Conv3x3GatheredScheduler(
-            self.channel, self.group, sparselen, granularity, save_dir+"/conv2.json"
-        )
-        sparse_layers["conv3"] = Conv1x1GatheredScheduler(
-            self.channel, self.channel, sparselen, granularity, save_dir+"/conv3.json"
-        )
+        if test_conv2:
+            sparse_layers["conv2"] = Conv3x3GatheredScheduler(
+                self.channel, self.group, sparselen, granularity, save_dir+"/conv2.json"
+            )
+        if test_conv3:
+            sparse_layers["conv3"] = Conv1x1GatheredScheduler(
+                self.channel, self.channel, sparselen, granularity, save_dir+"/conv3.json"
+            )
         if test_gather:
             sparse_layers["gather"] = GatherScheduler(
                 self.width, self.channel, sparselen, granularity, save_dir+"/gather.json"
