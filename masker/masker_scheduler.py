@@ -5,6 +5,7 @@ import tvm
 from tvm import autotvm
 import tvm.te as te
 import tvm.testing
+import time
 
 if not os.path.exists("log"):
     os.mkdir("log")
@@ -13,6 +14,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 refresh=True # clear prev search
 target="cuda"
 task_name="dyconv/masker"
+max_time=(3600*16)/(16*4)
+# max_time=10
 
 # widths, channels, group_width = regnet_parameters("008")
 # regnet 008
@@ -50,7 +53,7 @@ def find_best_n_blocks(width, slow, shigh):
 @autotvm.template(task_name)
 def masker_conv(batch_size,Cout, Cin, W, H, granul_size):
     # dataflow
-    print("batch_size,Cout, Cin, W, H, granul_size",batch_size,Cout, Cin, W, H, granul_size)
+    # print("batch_size,Cout, Cin, W, H, granul_size",batch_size,Cout, Cin, W, H, granul_size)
     input = te.placeholder((batch_size, Cin, H, W), dtype="float32", name="input")
     weight = te.placeholder((Cout, Cin), dtype="float32", name="weight")
 
@@ -136,15 +139,26 @@ def masker_conv(batch_size,Cout, Cin, W, H, granul_size):
 
     return s, [input, weight, output]
 
+class MyXGBTuner(autotvm.tuner.XGBTuner):
+    def __init__(self, task, plan_size=64, feature_type="itervar", loss_type="rank", num_threads=None, optimizer="sa", diversity_filter_ratio=None, log_interval=50):
+        super().__init__(task, plan_size, feature_type, loss_type, num_threads, optimizer, diversity_filter_ratio, log_interval)
+        self.st_time=time.time()
+
+    def has_next(self):
+        if time.time()-self.st_time>max_time:
+            print("Time out, break autotuner")
+            return False
+        return len(self.visited) < len(self.space)
+
 if __name__=='__main__':
 
     test_densities = [0.2, 0.4, 0.6, 0.8]
 
-    for density in test_densities:
+    for density in test_densities[0:1]:
         for i in range(4):
             width, channel = widths[i], channels[i]
             height=width
-            n_trial = 40
+            n_trial = 600
             granul_groups=1
             save_dir = f"log/c{channel}_w{width}_g{group_width}"
             if not os.path.exists(save_dir):
@@ -164,10 +178,11 @@ if __name__=='__main__':
                     builder=autotvm.LocalBuilder(),
                     runner=autotvm.LocalRunner(repeat=3, min_repeat_ms=150, timeout=4),
                 )
-                tuner = autotvm.tuner.XGBTuner(task)
+                tuner = MyXGBTuner(task)
                 tuner.tune(
                     n_trial=n_trial,
                     measure_option=measure_option,
+                    early_stopping=80,
                     callbacks=[autotvm.callback.log_to_file(save_path)],
                 )
                 print(f"autotune {save_path} complete!")

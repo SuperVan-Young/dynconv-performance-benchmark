@@ -42,22 +42,11 @@ for density in test_densities:
             task = autotvm.task.create(
                 task_name=task_name, args=args, target=target
             ) # Create a tuning task and initialize its search space
-            with autotvm.apply_history_best(save_path):
-                with tvm.target.Target(target):
-                    s, arg_bufs = masker_conv(*args)
-                    func = tvm.build(s, arg_bufs)
-                    
-                    evaluator=func.time_evaluator(func.entry_name,device,eval_repeat)
-                    input = np.random.randn(batch_size, channel, height, width).astype("float32")
-                    weight = np.random.randn(granul_groups, channel).astype("float32")
-                    output = np.zeros([batch_size,granul_groups,height//granul_size,width//granul_size]).astype("float32")
-                    sample=[input, weight,output]
-                    sample = [tvm.nd.array(_, device) for _ in sample]
-                    t=evaluator(*sample).mean
-                    with open(save_path+'.best','w') as f:
-                        f.write(f"time {t} \n")
-                        f.write(f"{tvm.lower(s, arg_bufs, simple_mode=True)}")
-                        # f.write(task.print_best(save_path))
+            with open(save_path+'.best','r') as f:
+                l=f.readline().split(" ")
+                ms=float(l[1])*1000
+                print(",".join([str(_) for _ in [channel,width,group_width,granul_size,density,ms]]))
+                # f.write(task.print_best(save_path))
                         
             # measure_option = autotvm.measure_option(
             #     builder=autotvm.LocalBuilder(),
@@ -69,4 +58,4 @@ for density in test_densities:
             #     measure_option=measure_option,
             #     callbacks=[autotvm.callback.log_to_file(save_path)],
             # )
-            print(f"autotune {save_path} complete!")
+            # print(f"autotune {save_path} complete!")
