@@ -10,10 +10,10 @@ import time
 if not os.path.exists("log"):
     os.mkdir("log")
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 refresh=False # clear prev search
 target="cuda"
-task_name="dyconv/masker"
+task_name="dyconv/masker_reduce"
 max_time=(3600*16)/(16*4)
 # max_time=10
 
@@ -54,19 +54,15 @@ def find_best_n_blocks(width, slow, shigh):
 def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size):
     # dataflow
     # print("batch_size,Cout, Cin, W, H, granul_size",batch_size,Cout, Cin, W, H, granul_size)
-    input = te.placeholder((batch_size, Cin, H, W), dtype="float32", name="input")
-    weight = te.placeholder((Cout+1, Cin), dtype="float32", name="weight")
+    input = te.placeholder((batch_size, Cout+1, H, W), dtype="float32", name="input")
 
     rc = te.reduce_axis((0, Cin), "rc")
-    # ry = te.reduce_axis((0, granul_size), "ry")
-    # rx = te.reduce_axis((0, granul_size), "rx")
+    ry = te.reduce_axis((0, granul_size), "ry")
+    rx = te.reduce_axis((0, granul_size), "rx")
     output = te.compute(
-        (batch_size, Cout+1, H, W),
-        lambda n, f, y, x: te.sum(
-            input[n, rc, y , x ] * weight[f, rc],
-            axis=[rc]
-        ),
-        name="output"
+        (batch_size,H//granul_size,W//granul_size),
+        lambda n,y,x:te.sum(input[n,Cout,y*granul_size+ry,x*granul_size+rx],axis=[ry,rx])
+        ,name="output"
     )
     # ry = te.reduce_axis((0, granul_size), "ry")
     # rx = te.reduce_axis((0, granul_size), "rx")
@@ -80,9 +76,8 @@ def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size):
 
     # schedule
     cfg = autotvm.get_config()
-    n, f, y, x = s[output].op.axis
+    n, y, x = s[output].op.axis
     # no tile on n
-    cfg.define_split("tile_f", f, num_outputs=4)  # with fi
     cfg.define_split("tile_y", y, num_outputs=4)  # by relieve memory ref
     cfg.define_split("tile_x", x, num_outputs=4)  # bx relieve memory ref
     cfg.define_split("tile_rc", rc, num_outputs=3)
@@ -98,20 +93,16 @@ def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size):
     # WL = s.cache_read(WW, "local", [OL])
 
     # tile and bind spatial axes
-    bf, vf, tf, fi = cfg["tile_f"].apply(s, output, f)
     by, vy, ty, yi = cfg["tile_y"].apply(s, output, y)
     bx, vx, tx, xi = cfg["tile_x"].apply(s, output, x)
 
-    s[output].bind(bf, te.thread_axis("blockIdx.z"))
     s[output].bind(by, te.thread_axis("blockIdx.y"))
     s[output].bind(bx, te.thread_axis("blockIdx.x"))
-    s[output].bind(vf, te.thread_axis("vthread"))
     s[output].bind(vy, te.thread_axis("vthread"))
     s[output].bind(vx, te.thread_axis("vthread"))
-    s[output].bind(tf, te.thread_axis("threadIdx.z"))
     s[output].bind(ty, te.thread_axis("threadIdx.y"))
     s[output].bind(tx, te.thread_axis("threadIdx.x"))
-    s[output].reorder(n, bf, by, bx, vf, vy, vx, tf, ty, tx, fi, yi, xi)
+    s[output].reorder(n,  by, bx,  vy, vx,  ty, tx,  yi, xi)
     s[OL].compute_at(s[output], tx)
 
     # # tile reduction axes
@@ -148,7 +139,7 @@ def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size):
     # cfg.valid()
     # import pdb;pdb.set_trace()
 
-    return s, [input, weight, output]
+    return s, [input, output]
 
 class MyXGBTuner(autotvm.tuner.XGBTuner):
     def __init__(self, task, plan_size=64, feature_type="itervar", loss_type="rank", num_threads=None, optimizer="sa", diversity_filter_ratio=None, log_interval=50):
@@ -165,7 +156,7 @@ if __name__=='__main__':
 
     test_densities = [0.2, 0.4, 0.6, 0.8]
 
-    for density in test_densities[:1]:
+    for density in test_densities[0:1]:
         for i in range(4):
             width, channel = widths[i], channels[i]
             height=width
@@ -175,10 +166,10 @@ if __name__=='__main__':
             if not os.path.exists(save_dir):
                 os.mkdir(save_dir)
             
-            granul_sizes = get_factors(width)[:1]
+            granul_sizes = get_factors(width)[1:]
             for granul_size in granul_sizes:
                 n_blocks = find_best_n_blocks(width//granul_size, density-0.01, density+0.01)
-                save_path=f"{save_dir}/maskconv_and_conv1.json"
+                save_path=f"{save_dir}/maskconv_reduce_g{granul_size}_nb{n_blocks}.json"
                 if os.path.exists(save_path) and refresh:
                     os.remove(save_path)
                 args=[batch_size,granul_groups,channel,width,height,granul_size]
