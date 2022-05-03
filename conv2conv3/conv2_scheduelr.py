@@ -10,10 +10,10 @@ import time
 if not os.path.exists("log"):
     os.mkdir("log")
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
-refresh=False # clear prev search
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+refresh=1 # clear prev search
 target="cuda"
-task_name="dyconv/masker_reduce"
+task_name="dyconv/conv2"
 max_time=(3600*16)/(16*4)
 # max_time=10
 
@@ -50,96 +50,114 @@ def find_best_n_blocks(width, slow, shigh):
     # import pdb;pdb.set_trace()
     return max(sparselens[idx], 1) # minimum 1
 
-@autotvm.template(task_name)
-def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size):
-    # dataflow
-    # print("batch_size,Cout, Cin, W, H, granul_size",batch_size,Cout, Cin, W, H, granul_size)
-    input = te.placeholder((batch_size, Cout+1, H, W), dtype="float32", name="input")
+def padding(X, ph, pw, val=0):
+    """Pad X with the given value in 2-D
 
-    ry = te.reduce_axis((0, granul_size), "ry")
-    rx = te.reduce_axis((0, granul_size), "rx")
+    ph, pw : height and width padding
+    val : padding value, default 0
+    """
+    assert len(X.shape) >= 2
+    nh, nw = X.shape[-2], X.shape[-1]
+    return te.compute(
+            (*X.shape[0:-2], nh+ph*2, nw+pw*2),
+            lambda *i: te.if_then_else(
+                te.any(i[-2]<ph, i[-2]>=nh+ph, i[-1]<pw, i[-1]>=nw+pw),
+                val, X[i[:-2]+(i[-2]-ph, i[-1]-pw)]),
+            name='PaddedX')
+
+@autotvm.template(task_name)
+def conv2(batch_size,Cout, Cin, W, H,n_groups, granul_size,granul_groups=1):
+    # dataflow
+    input = te.placeholder((batch_size, Cin, H, W ), dtype="float32", name="input")
+    pre_mask = te.placeholder((batch_size, granul_groups, H,W ), dtype="float32", name="pre_mask")
+    weight = te.placeholder((Cout, Cin//n_groups, 3, 3),
+                            dtype="float32", name="weight")
+    group_width=Cin//n_groups
+    rc = te.reduce_axis((0, group_width), name="rc")
+    ry = te.reduce_axis((0, 3), name="ry")
+    rx = te.reduce_axis((0, 3), name="rx")
+
+    # def find_group(f): return f - (f % (Cin//n_groups))
+
+    # def find_input(v, ry, rx):
+    #     y, x = v // G, v % G
+    #     y_, x_ = y + ry, x + rx
+    #     v_ = y_ * (G+2) + x_
+    #     return v_
+    
+    PaddedX = padding(input, 1, 1)
     output = te.compute(
-        (batch_size,H//granul_size,W//granul_size),
-        lambda n,y,x:te.sum(input[n,Cout,y*granul_size+ry,x*granul_size+rx],axis=[ry,rx])
-        ,name="output"
+        (batch_size, Cout, W, H),
+        lambda n, f, y, x: te.sum(
+            PaddedX[n, f//group_width*group_width+rc, y+ry, x+rx
+                  ] * weight[f, rc, ry, rx],
+            axis=[rc, ry, rx]),
+        name="output"
     )
-    # ry = te.reduce_axis((0, granul_size), "ry")
-    # rx = te.reduce_axis((0, granul_size), "rx")
-    # mask=te.compute(
-    #     (batch_size,H//granul_size,W//granul_size),
-    #     lambda n,y,x:te.sum(output[n,Cout,y*granul_size+ry,x*granul_size+rx],axis=[ry,rx])
-    #     )
 
     s = te.create_schedule(output.op)
-    # s_mask = te.create_schedule(mask.op)
-
+    s[PaddedX].compute_inline()
+    
     # schedule
     cfg = autotvm.get_config()
-    n, y, x = s[output].op.axis
+    n, f, y, x = s[output].op.axis
     # no tile on n
+    cfg.define_split("tile_f", f, num_outputs=4, policy='verbose',no_tail=False)  # with fi
     cfg.define_split("tile_y", y, num_outputs=4)  # by relieve memory ref
     cfg.define_split("tile_x", x, num_outputs=4)  # bx relieve memory ref
+    cfg.define_split("tile_rc", rc, num_outputs=3)
     cfg.define_split("tile_ry", ry, num_outputs=3)
     cfg.define_split("tile_rx", rx, num_outputs=3)
 
     # caching
     OL = s.cache_write(output, "local")
 
-    # AA = s.cache_read(input, "shared", [OL])
-    # WW = s.cache_read(weight, "shared", [OL])
-    # AL = s.cache_read(AA, "local", [OL])
-    # WL = s.cache_read(WW, "local", [OL])
+    AA = s.cache_read(PaddedX, "shared", [OL])
+    WW = s.cache_read(weight, "shared", [OL])
+    AL = s.cache_read(AA, "local", [OL])
+    WL = s.cache_read(WW, "local", [OL])
 
     # tile and bind spatial axes
+    bf, vf, tf, fi = cfg["tile_f"].apply(s, output, f)
     by, vy, ty, yi = cfg["tile_y"].apply(s, output, y)
     bx, vx, tx, xi = cfg["tile_x"].apply(s, output, x)
-    # ryo, rym, ryi = cfg["tile_ry"].apply(s, OL, ry)
-    # rxo, rxm, rxi = cfg["tile_rx"].apply(s, OL, rx)
 
+    s[output].bind(bf, te.thread_axis("blockIdx.z"))
     s[output].bind(by, te.thread_axis("blockIdx.y"))
     s[output].bind(bx, te.thread_axis("blockIdx.x"))
+    s[output].bind(vf, te.thread_axis("vthread"))
     s[output].bind(vy, te.thread_axis("vthread"))
     s[output].bind(vx, te.thread_axis("vthread"))
+    s[output].bind(tf, te.thread_axis("threadIdx.z"))
     s[output].bind(ty, te.thread_axis("threadIdx.y"))
     s[output].bind(tx, te.thread_axis("threadIdx.x"))
-    s[output].reorder(n,  by, bx,  vy, vx,  ty, tx,  yi, xi)
+    s[output].reorder(n, bf, by, bx, vf, vy, vx, tf, ty, tx, fi, yi, xi)
     s[OL].compute_at(s[output], tx)
 
-    # # tile reduction axes
-    n, y, x = s[OL].op.axis
-    ry, rx = s[OL].op.reduce_axis
-    # rc = s[OL].op.reduce_axis
-    # rco, rcm, rci = cfg["tile_rc"].apply(s, OL, rc)
+    # tile reduction axes
+    n, f, y, x = s[OL].op.axis
+    rc, ry, rx = s[OL].op.reduce_axis
+    rco, rcm, rci = cfg["tile_rc"].apply(s, OL, rc)
     ryo, rym, ryi = cfg["tile_ry"].apply(s, OL, ry)
     rxo, rxm, rxi = cfg["tile_rx"].apply(s, OL, rx)
-    s[OL].reorder(ryo, rxo, rym, rxm, ryi, rxi, n, y, x)
-    # s[OL].reorder(rco, rcm, rci, n, f, y, x)
-    # s[AA].compute_at(s[OL], rxo)
-    # s[WW].compute_at(s[OL], rxo)
-    # s[AL].compute_at(s[OL], rxm)
-    # s[WL].compute_at(s[OL], rxm)
+    s[OL].reorder(rco, ryo, rxo, rcm, rym, rxm, rci, ryi, rxi, n, f, y, x)
+    s[AA].compute_at(s[OL], rxo)
+    s[WW].compute_at(s[OL], rxo)
+    s[AL].compute_at(s[OL], rxm)
+    s[WL].compute_at(s[OL], rxm)
 
     # cooperative fetching
-    # for load in [AA, WW]:
-    #     n, f, y, x = s[load].op.axis
-    #     fused = s[load].fuse(n, f, y, x)
-    #     tz, fused = s[load].split(fused, nparts=cfg["tile_f"].size[2])  # tf
-    #     ty, fused = s[load].split(fused, nparts=cfg["tile_y"].size[2])  # ty
-    #     tx, fused = s[load].split(fused, nparts=cfg["tile_x"].size[2])  # tx
-    #     s[load].bind(tz, te.thread_axis("threadIdx.z"))
-    #     s[load].bind(ty, te.thread_axis("threadIdx.y"))
-    #     s[load].bind(tx, te.thread_axis("threadIdx.x"))
-    
-    # # cooperative fetching
-    # for load in [ WW]:
-    #     n, f = s[load].op.axis
-    #     fused = s[load].fuse(n, f)
-    #     tz, fused = s[load].split(fused, nparts=cfg["tile_f"].size[2])  # tf
-    #     s[load].bind(tz, te.thread_axis("threadIdx.z"))
-    # cfg.valid()
-    # import pdb;pdb.set_trace()
+    for load in [AA, WW]:
+        n, f, y, x = s[load].op.axis
+        fused = s[load].fuse(n, f, y, x)
+        tz, fused = s[load].split(fused, nparts=cfg["tile_f"].size[2])  # tf
+        ty, fused = s[load].split(fused, nparts=cfg["tile_y"].size[2])  # ty
+        tx, fused = s[load].split(fused, nparts=cfg["tile_x"].size[2])  # tx
+        s[load].bind(tz, te.thread_axis("threadIdx.z"))
+        s[load].bind(ty, te.thread_axis("threadIdx.y"))
+        s[load].bind(tx, te.thread_axis("threadIdx.x"))
 
-    return s, [input, output]
+    return s, [input, weight, output]
 
 class MyXGBTuner(autotvm.tuner.XGBTuner):
     def __init__(self, task, plan_size=64, feature_type="itervar", loss_type="rank", num_threads=None, optimizer="sa", diversity_filter_ratio=None, log_interval=50):
@@ -156,7 +174,7 @@ if __name__=='__main__':
 
     test_densities = [0.2, 0.4, 0.6, 0.8]
 
-    for density in test_densities[0:1]:
+    for density in test_densities[:1]:
         for i in range(4):
             width, channel = widths[i], channels[i]
             height=width
@@ -166,13 +184,15 @@ if __name__=='__main__':
             if not os.path.exists(save_dir):
                 os.mkdir(save_dir)
             
-            granul_sizes = get_factors(width)
+            granul_sizes = get_factors(width)[:1]
             for granul_size in granul_sizes:
                 n_blocks = find_best_n_blocks(width//granul_size, density-0.01, density+0.01)
-                save_path=f"{save_dir}/maskconv_reduce_g{granul_size}_nb{n_blocks}.json"
+                save_path=f"{save_dir}/raw_conv2.json"
                 if os.path.exists(save_path) and refresh:
                     os.remove(save_path)
-                args=[batch_size,granul_groups,channel,width,height,granul_size]
+                assert channel%group_width==0
+                n_groups=channel// group_width
+                args=[batch_size,channel,channel,width,height,n_groups,granul_size]
                 task = autotvm.task.create(
                     task_name=task_name, args=args, target=target
                 ) # Create a tuning task and initialize its search space
@@ -184,7 +204,7 @@ if __name__=='__main__':
                 tuner.tune(
                     n_trial=n_trial,
                     measure_option=measure_option,
-                    early_stopping=80,
+                    early_stopping=150,
                     callbacks=[autotvm.callback.log_to_file(save_path)],
                 )
                 print(f"autotune {save_path} complete!")

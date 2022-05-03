@@ -10,8 +10,8 @@ import time
 if not os.path.exists("log"):
     os.mkdir("log")
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
-refresh=False # clear prev search
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+refresh=1 # clear prev search
 target="cuda"
 task_name="dyconv/masker"
 max_time=(3600*16)/(16*4)
@@ -51,51 +51,54 @@ def find_best_n_blocks(width, slow, shigh):
     return max(sparselens[idx], 1) # minimum 1
 
 @autotvm.template(task_name)
-def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size):
+def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size,granul_groups=1):
     # dataflow
     # print("batch_size,Cout, Cin, W, H, granul_size",batch_size,Cout, Cin, W, H, granul_size)
     input = te.placeholder((batch_size, Cin, H, W), dtype="float32", name="input")
-    weight = te.placeholder((Cout+1, Cin), dtype="float32", name="weight")
+    weight = te.placeholder((Cout+granul_groups, Cin,1,1), dtype="float32", name="weight")
 
     rc = te.reduce_axis((0, Cin), "rc")
+    ry = te.reduce_axis((0, 1), "ry")
+    rx = te.reduce_axis((0, 1), "rx")
     # ry = te.reduce_axis((0, granul_size), "ry")
     # rx = te.reduce_axis((0, granul_size), "rx")
     output = te.compute(
-        (batch_size, Cout+1, H, W),
+        (batch_size, Cout+granul_groups, H, W),
         lambda n, f, y, x: te.sum(
-            input[n, rc, y , x ] * weight[f, rc],
-            axis=[rc]
+            input[n, rc, y + ry, x + rx] * weight[f, rc, ry, rx],
+            axis=[rc,ry,rx]
         ),
         name="output"
     )
     # ry = te.reduce_axis((0, granul_size), "ry")
     # rx = te.reduce_axis((0, granul_size), "rx")
     # mask=te.compute(
-    #     (batch_size,H//granul_size,W//granul_size),
-    #     lambda n,y,x:te.sum(output[n,Cout,y*granul_size+ry,x*granul_size+rx],axis=[ry,rx])
+    #     (batch_size,1,H//granul_size,W//granul_size),
+    #     lambda n,f,y,x:te.sum(output[n,Cout+f,y*granul_size+ry,x*granul_size+rx],axis=[ry,rx]),
+    #     name='mask'
     #     )
 
-    s = te.create_schedule(output.op)
-    # s_mask = te.create_schedule(mask.op)
-
+    # s = te.create_schedule([output.op,mask.op])
+    s = te.create_schedule([output.op])
+    
     # schedule
     cfg = autotvm.get_config()
     n, f, y, x = s[output].op.axis
     # no tile on n
-    cfg.define_split("tile_f", f, num_outputs=4)  # with fi
+    cfg.define_split("tile_f", f, num_outputs=4, policy='verbose',no_tail=False)  # with fi
     cfg.define_split("tile_y", y, num_outputs=4)  # by relieve memory ref
     cfg.define_split("tile_x", x, num_outputs=4)  # bx relieve memory ref
     cfg.define_split("tile_rc", rc, num_outputs=3)
-    # cfg.define_split("tile_ry", ry, num_outputs=3)
-    # cfg.define_split("tile_rx", rx, num_outputs=3)
+    cfg.define_split("tile_ry", ry, num_outputs=3)
+    cfg.define_split("tile_rx", rx, num_outputs=3)
 
     # caching
     OL = s.cache_write(output, "local")
 
-    # AA = s.cache_read(input, "shared", [OL])
-    # WW = s.cache_read(weight, "shared", [OL])
-    # AL = s.cache_read(AA, "local", [OL])
-    # WL = s.cache_read(WW, "local", [OL])
+    AA = s.cache_read(input, "shared", [OL])
+    WW = s.cache_read(weight, "shared", [OL])
+    AL = s.cache_read(AA, "local", [OL])
+    WL = s.cache_read(WW, "local", [OL])
 
     # tile and bind spatial axes
     bf, vf, tf, fi = cfg["tile_f"].apply(s, output, f)
@@ -114,39 +117,28 @@ def masker_and_conv1(batch_size,Cout, Cin, W, H, granul_size):
     s[output].reorder(n, bf, by, bx, vf, vy, vx, tf, ty, tx, fi, yi, xi)
     s[OL].compute_at(s[output], tx)
 
-    # # tile reduction axes
-    # n, f, y, x = s[OL].op.axis
-    # # rc, ry, rx = s[OL].op.reduce_axis
-    # rc = s[OL].op.reduce_axis
-    # rco, rcm, rci = cfg["tile_rc"].apply(s, OL, rc)
-    # # ryo, rym, ryi = cfg["tile_ry"].apply(s, OL, ry)
-    # # rxo, rxm, rxi = cfg["tile_rx"].apply(s, OL, rx)
-    # # s[OL].reorder(rco, ryo, rxo, rcm, rym, rxm, rci, ryi, rxi, n, f, y, x)
-    # s[OL].reorder(rco, rcm, rci, n, f, y, x)
-    # s[AA].compute_at(s[OL], rxo)
-    # s[WW].compute_at(s[OL], rxo)
-    # s[AL].compute_at(s[OL], rxm)
-    # s[WL].compute_at(s[OL], rxm)
+    # tile reduction axes
+    n, f, y, x = s[OL].op.axis
+    rc, ry, rx = s[OL].op.reduce_axis
+    rco, rcm, rci = cfg["tile_rc"].apply(s, OL, rc)
+    ryo, rym, ryi = cfg["tile_ry"].apply(s, OL, ry)
+    rxo, rxm, rxi = cfg["tile_rx"].apply(s, OL, rx)
+    s[OL].reorder(rco, ryo, rxo, rcm, rym, rxm, rci, ryi, rxi, n, f, y, x)
+    s[AA].compute_at(s[OL], rxo)
+    s[WW].compute_at(s[OL], rxo)
+    s[AL].compute_at(s[OL], rxm)
+    s[WL].compute_at(s[OL], rxm)
 
     # cooperative fetching
-    # for load in [AA, WW]:
-    #     n, f, y, x = s[load].op.axis
-    #     fused = s[load].fuse(n, f, y, x)
-    #     tz, fused = s[load].split(fused, nparts=cfg["tile_f"].size[2])  # tf
-    #     ty, fused = s[load].split(fused, nparts=cfg["tile_y"].size[2])  # ty
-    #     tx, fused = s[load].split(fused, nparts=cfg["tile_x"].size[2])  # tx
-    #     s[load].bind(tz, te.thread_axis("threadIdx.z"))
-    #     s[load].bind(ty, te.thread_axis("threadIdx.y"))
-    #     s[load].bind(tx, te.thread_axis("threadIdx.x"))
-    
-    # # cooperative fetching
-    # for load in [ WW]:
-    #     n, f = s[load].op.axis
-    #     fused = s[load].fuse(n, f)
-    #     tz, fused = s[load].split(fused, nparts=cfg["tile_f"].size[2])  # tf
-    #     s[load].bind(tz, te.thread_axis("threadIdx.z"))
-    # cfg.valid()
-    # import pdb;pdb.set_trace()
+    for load in [AA, WW]:
+        n, f, y, x = s[load].op.axis
+        fused = s[load].fuse(n, f, y, x)
+        tz, fused = s[load].split(fused, nparts=cfg["tile_f"].size[2])  # tf
+        ty, fused = s[load].split(fused, nparts=cfg["tile_y"].size[2])  # ty
+        tx, fused = s[load].split(fused, nparts=cfg["tile_x"].size[2])  # tx
+        s[load].bind(tz, te.thread_axis("threadIdx.z"))
+        s[load].bind(ty, te.thread_axis("threadIdx.y"))
+        s[load].bind(tx, te.thread_axis("threadIdx.x"))
 
     return s, [input, weight, output]
 
@@ -181,7 +173,7 @@ if __name__=='__main__':
                 save_path=f"{save_dir}/maskconv_and_conv1.json"
                 if os.path.exists(save_path) and refresh:
                     os.remove(save_path)
-                args=[batch_size,granul_groups,channel,width,height,granul_size]
+                args=[batch_size,channel,channel,width,height,granul_size]
                 task = autotvm.task.create(
                     task_name=task_name, args=args, target=target
                 ) # Create a tuning task and initialize its search space
@@ -193,7 +185,7 @@ if __name__=='__main__':
                 tuner.tune(
                     n_trial=n_trial,
                     measure_option=measure_option,
-                    early_stopping=80,
+                    early_stopping=150,
                     callbacks=[autotvm.callback.log_to_file(save_path)],
                 )
                 print(f"autotune {save_path} complete!")
